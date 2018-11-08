@@ -12,6 +12,7 @@
 #define BUFLEN 1400
 #define PACKET_LOSS_PROB 0.02
 #define PORT 10080
+#define SOCK_BUF_SIZE 10000000
 
 
 int main(void)
@@ -21,8 +22,10 @@ int main(void)
 	int recv_sock, i, slen = sizeof(send_addr);
 	char buf[BUFLEN];
 	int ret;
-	int sock_buf_size;
+	int sock_buf_size = -1;
+	int new_sock_buf_size = SOCK_BUF_SIZE;
 	socklen_t len;
+	int sock_buf_len = sizeof(sock_buf_size);
 	int bf = 1;
 	
 	//create a UDP socket
@@ -31,30 +34,44 @@ int main(void)
 		perror("socket");
 		exit(1);
 	}
-	if(getsockopt(recv_sock, SOL_SOCKET, SO_SNDBUF, &sock_buf_size, &len))
+	if(getsockopt(recv_sock, SOL_SOCKET, SO_RCVBUF, (char*)&sock_buf_size, &sock_buf_len) < 0)
 	{
 		perror("getsockopt error");
 		exit(1);
 	}
-	if(setsockopt(recv_sock, SOL_SOCKET, SO_REUSEADDR, (char*)&bf, (int)sizeof(bf)) == SO_ERROR)
+	printf("packet loss probability: %.2f\n", PACKET_LOSS_PROB);
+	printf("socket recv buffer size: %d\n", sock_buf_size);
+
+	if(setsockopt(recv_sock, SOL_SOCKET, SO_REUSEADDR, (char*)&bf, (int)sizeof(bf)) < 0)
 	{
-		perror("setsockopt error");
+		perror("setsockopt error(SO_REUSEADDR)");
 		exit(1);
 	}
-
+	if(sock_buf_size < 10000000)
+	{
+		if(setsockopt(recv_sock, SOL_SOCKET, SO_RCVBUF, &new_sock_buf_size, sizeof(new_sock_buf_size)) < 0)
+		{
+			perror("setsockopt error(SO_RCVBUF)");
+			exit(1);
+		}
+	}
+	if(getsockopt(recv_sock, SOL_SOCKET, SO_RCVBUF, (char*)&sock_buf_size, &sock_buf_len) < 0)
+	{
+		perror("getsockopt error");
+		exit(1);
+	}
+	printf("socket recv buffer size updated: %d\n", sock_buf_size);
 	memset((char *) &recv_addr, 0, sizeof(recv_addr));
 	
 	recv_addr.sin_family = AF_INET;
 	recv_addr.sin_port = htons(PORT);
 	recv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	
-	printf("packet loss probability: %.2f\n", PACKET_LOSS_PROB);
 	if( bind(recv_sock, (struct sockaddr*)&recv_addr, sizeof(recv_addr)) == -1)
 	{
 		perror("bind");
 		exit(1);
 	}
-	printf("socket buffer size: %dB\n", sock_buf_size);
 	while(1)
 	{
 		//try to receive some data, this is a blocking call
