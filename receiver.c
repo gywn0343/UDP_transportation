@@ -17,16 +17,27 @@
 #define INT_DIGITS 19
 
 typedef struct ACK{
-	char fileName[BUFLEN];
+	char fileName[BUFLEN + 1];
 	int ack;
 }ACK;
 ACK ack[FILE_NUM];
 typedef struct MSG{
-	char fileName[BUFLEN];
-	char buf[BUFLEN];
+	char fileName[BUFLEN + 1];
+	char buf[BUFLEN + 1];
 	int seq;
+	int ret;
 }MSG;
 
+void print()
+{
+	int i;
+	printf("----------------\n");
+	for(i=0;ack[i].ack != -1;i++)
+	{
+		printf("%s: %d\n", ack[i].fileName, ack[i].ack);
+	}
+	pritnf("----------------\n");
+}
 char* itoa(int i)
 {
 	static char buf[INT_DIGITS + 2];
@@ -38,26 +49,30 @@ char* itoa(int i)
 	} while(i != 0);
 	return p;
 }
-int receive_file(char *fileName, char *buf, int seq)
+ACK receive_file(char *fileName, char *buf, int seq, int length)
 {
-	int i;
-	printf("%s:/n%s\nseq: %d", fileName, buf, seq);
+	int i, loc;
+	int flag = 0;
+	//printf("%s:\n%s\nseq: %d\n", fileName, buf, seq);
+	printf("%s %d: %d %ld\n", fileName, seq, length, strlen(buf));
 	for(i=0;i<FILE_NUM;i++)
 	{
 		if(strcmp(ack[i].fileName, fileName) == 0)
 		{
-			ack[i].ack;
-			if(ack[i].ack < seq) ack[i].ack = seq;
+			if(ack[i].ack + 1 == seq) ack[i].ack = seq; // is it sequential?
+			else flag = 1;
 			break;
 		}
-		if(ack[i].ack == 0) 
+		else if(ack[i].ack == -1 && seq == 0) 
 		{
+			strcpy(ack[i].fileName, fileName);
 			ack[i].ack = seq;
 			break;
 		}
 	}
 
 	int fp;
+	if(flag == 1) return ack[i]; // redundent sequence || some packets are missing
 	if(seq == 0)
 	{
 		if((fp = open(fileName, O_RDWR | O_CREAT, 0755)) == -1)
@@ -75,9 +90,10 @@ int receive_file(char *fileName, char *buf, int seq)
 		}
 	}
 
-	write(fp, buf, sizeof(buf));
+	write(fp, buf, length);
 	close(fp);
-	return ack[i].ack;
+printf("%s %d\n", ack[i].fileName, ack[i].ack);
+	return ack[i];
 }
 int main(void)
 {
@@ -114,7 +130,7 @@ int main(void)
 	if(sock_buf_size < SOCK_BUF_SIZE)
 	{
 	printf("%d\n", new_sock_buf_size);
-		if(setsockopt(recv_sock, SOL_SOCKET, SO_RCVBUF, &new_sock_buf_size, sizeof(new_sock_buf_size)) < 0)
+		if(setsockopt(recv_sock, SOL_SOCKET, SO_RCVBUF, (char*)&new_sock_buf_size, sizeof(new_sock_buf_size)) < 0)
 		{
 			perror("setsockopt error(SO_RCVBUF)");
 			exit(1);
@@ -138,6 +154,8 @@ int main(void)
 		exit(1);
 	}
 	printf("bind success!\n");
+	for(i=0;i<FILE_NUM;i++)
+		ack[i].ack = -1;
 	MSG* msg = (MSG*)malloc(sizeof(MSG));
 	while(1)
 	{
@@ -154,12 +172,14 @@ int main(void)
 		{
 			continue;
 		}
-		ret = receive_file(msg->fileName, msg->buf, msg->seq);
-		char* s_ret = itoa(ret);
+		if(msg->ret == 0)
+			continue;
+		ACK tmp = receive_file(msg->fileName, msg->buf, msg->seq, msg->ret);
+print();
 
 		
 		//now reply the client with the same data
-		if (sendto(recv_sock, s_ret, sizeof(s_ret), 0, (struct sockaddr*) &send_addr, slen) == -1)
+		if (sendto(recv_sock, &tmp, sizeof(tmp), 0, (struct sockaddr*) &send_addr, slen) == -1)
 		{
 			perror("sendto");
 			exit(1);
