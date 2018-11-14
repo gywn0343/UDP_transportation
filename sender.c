@@ -42,7 +42,7 @@ char* itoa(int i)
 	}while(i != 0);
 	return p;
 }
-void slide_window(int ack, MSG **msg, int* msg_cnt)
+int slide_window(int ack, MSG **msg, int* msg_cnt)
 {
 	int i, j;
 	int cnt = 0;
@@ -61,6 +61,7 @@ void slide_window(int ack, MSG **msg, int* msg_cnt)
 		}
 	}
 	*msg_cnt -= cnt;
+	return cnt;
 }
 int isOver(MSG* msg)
 {
@@ -79,12 +80,16 @@ void print(MSG* msg)
 void do_fileSend(int send_sock, struct sockaddr_in recv_addr, int slen, char* fileName)
 {
 	int ret;
+	int cnt = 0;
 	int i, fp;
 	MSG *msg = (struct MSG*)malloc(sizeof(struct MSG) * WIN);
 	char buf[BUFLEN + 1];
 	char ack[ACKLEN + 1];
+	char tmp_ack[ACKLEN + 1];
 	int msg_cnt = 0;
 	int p_win = 0;
+	char state1[] = "close!";
+	char state2[] = "aaaaa!";
 	int seq = 0;
 	int flag = 0;
 	clock_t start = clock();
@@ -98,8 +103,7 @@ void do_fileSend(int send_sock, struct sockaddr_in recv_addr, int slen, char* fi
 		exit(1);
 	}
 	int fd[2];
-	int fd1[2];
-	if(pipe(fd) == -1 || pipe(fd1) == -1)
+	if(pipe(fd) == -1)
 	{
 		perror("pipe");
 		exit(1);
@@ -113,14 +117,14 @@ void do_fileSend(int send_sock, struct sockaddr_in recv_addr, int slen, char* fi
 	if(pid > 0) // parent
 	{
 		close(fd[1]);
-	//	close(fd1[0]);
 		MSG *cur_msg = (struct MSG*)malloc(sizeof(struct MSG));
 		while(1)
 		{
 printf("flag = %d\n", flag);
 print(msg);
-			if(flag == 0)
+			if(flag == 0 || flag == 3)
 			{
+printf("msg_cnt = %d\n", msg_cnt);
 				for(;msg_cnt < WIN;msg_cnt++)
 				{
 					memset(buf, 0, BUFLEN+1);
@@ -155,26 +159,40 @@ print(msg);
 			if(flag == 1 && isOver(msg))
 			{
 printf("Bye!\n");
+				kill(pid, SIGINT);
 				return;
 			}
 			now = clock();
 			last = now - start;
 printf("last: %f time: %f\n", last, TIME);
-			if(last > TIME)
+			if(last > TIME && flag == 3)
 			{
 printf("timer error\n");
 				flag = 2;
 				start = clock();
 				continue;
 			}
-			memset(ack, 0, ACKLEN+1);
-			if(read(fd[0], ack, ACKLEN) == 0) continue;
-			if(*ack == 0) continue;
+			else if(last > TIME)
+			{
+				flag = 3;
+				start = clock();
+			}
+		
+			while(1)
+			{
+				memset(ack, 0, ACKLEN+1);
+				read(fd[0], ack, ACKLEN);
+				if(*ack != 0) break;
+			}
+printf("ack in parent: <%s>\n", ack);
+		
+			
+			//if(*ack == 0) continue;
 			if(atoi(ack) == prev_ack) 
 			{
-printf("3 dup error\n");
 				if(++dup == DUP) 
 				{
+printf("3 dup error\n");
 					flag = 2; // re-send data in window
 					dup = 0;
 				}
@@ -182,14 +200,15 @@ printf("3 dup error\n");
 			else dup = 0;
 			prev_ack = atoi(ack);
 printf("ack in parent: %s %d\n", ack, atoi(ack));
-			slide_window(atoi(ack), &msg, &msg_cnt);
+			ret = slide_window(atoi(ack), &msg, &msg_cnt);
+			if(ret > 0) flag = 0; // window slided
 		}
 	}
 	else if(pid == 0) // child
 	{
 		close(fd[0]);
-	//	close(fd1[1]);
 		ACK *Ack = (ACK*)malloc(sizeof(ACK));
+		char send_ack[ACKLEN + 1] = "0";
 		char null_ack = 0;
 		while(1)
 		{
@@ -197,18 +216,18 @@ printf("ack in parent: %s %d\n", ack, atoi(ack));
 			memset(ack, 0, ACKLEN + 1);
 			if(recvfrom(send_sock, Ack, sizeof(ACK), 0, (struct sockaddr*)&recv_addr, &slen) == -1)
 				continue;
-			//usleep(3000);
-printf("%s\n", Ack->fileName);
+			usleep(100);
+			if(atoi(send_ack) < Ack->ack);
+			strcpy(send_ack, itoa(Ack->ack));
+printf("receiving...%s %s %s\n", fileName, Ack->fileName, send_ack);
 			if(strcmp(fileName, Ack->fileName) != 0) 
 			{
+printf("here ! %s %s\n", fileName, Ack->fileName);
 				write(fd[1], &null_ack, 1);
 				continue; // ack for another file
 			}
-			strcpy(ack, itoa(Ack->ack));
-			write(fd[1], ack, sizeof(ack));
-printf("ack in child: %s\n", ack);
-		//	if(read(fd1[0], get_flag, 7) == 0) continue;
-		//	if(strcmp(get_flag, "close!") == 0) return;
+			write(fd[1], send_ack, sizeof(send_ack));
+printf("ack in child: %s\n", send_ack);
 		}
 	}
 }
@@ -252,12 +271,6 @@ int main(void)
 		memset(fileName, 0, BUFLEN);
 		printf("file name: ");
 		scanf("%s", fileName);
-		//send file name
-		if (sendto(send_sock, fileName, strlen(fileName), 0, (struct sockaddr*)&recv_addr, slen)==-1)
-		{
-			perror("sendto error");
-			exit(1);
-		}
 		
 		if((pid = fork()) < 0)
 		{
@@ -268,17 +281,6 @@ int main(void)
 		{
 			do_fileSend(send_sock, recv_addr, slen, fileName);
 		}
-
-		
-		//memset(buf,'\0', BUFLEN);
-		//try to receive some data, this is a blocking call
-		/*if (recvfrom(send_sock, buf, BUFLEN, 0, (struct sockaddr*)&recv_addr, &slen) == -1)
-		{
-			perror("recvfrom error");
-			exit(1);
-		}
-		
-		puts(buf);*/
 	}
 	close(send_sock);
 	return 0;
