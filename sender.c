@@ -134,12 +134,12 @@ printf("msg_cnt = %d\n", msg_cnt);
 						flag = 1;
 						break;
 					}
-printf("buf size: %d\n", ret);
 					cur_msg = &(msg[msg_cnt]);
 					strcpy(cur_msg->fileName, fileName);
 					strcpy(cur_msg->buf, buf);
 					cur_msg->ret = ret;
 					cur_msg->seq = seq++;
+print(msg);
 printf("%s %d: %d\n", cur_msg->fileName, cur_msg->seq, cur_msg->ret);
 					sendto(send_sock, cur_msg, sizeof(struct MSG), 0, (struct sockaddr*)&recv_addr, slen);
 				}
@@ -216,7 +216,7 @@ printf("ack in parent: %s %d\n", ack, atoi(ack));
 			memset(ack, 0, ACKLEN + 1);
 			if(recvfrom(send_sock, Ack, sizeof(ACK), 0, (struct sockaddr*)&recv_addr, &slen) == -1)
 				continue;
-			usleep(100);
+			usleep(500);
 			if(atoi(send_ack) < Ack->ack);
 			strcpy(send_ack, itoa(Ack->ack));
 printf("receiving...%s %s %s\n", fileName, Ack->fileName, send_ack);
