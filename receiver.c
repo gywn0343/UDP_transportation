@@ -10,7 +10,7 @@
 #include <fcntl.h>
 
 #define BUFLEN 1400
-#define PACKET_LOSS_PROB 2
+#define PACKET_LOSS_PROB 0
 #define PORT 10080
 #define SOCK_BUF_SIZE 10000000
 #define FILE_NUM 10000
@@ -104,6 +104,21 @@ int isDrop()
 	if(ret < PACKET_LOSS_PROB) return 1;
 	return 0;
 }
+void erase_fileAck(char* fileName)
+{
+	int i, j;
+	for(i=0;ack[i].ack != -1;i++)
+	{
+		if(strcmp(ack[i].fileName, fileName) == 0)
+		{
+			for(j=i;ack[j].ack != -1;j++)
+			{
+				ack[j] = ack[j+1];
+			}
+		}
+	}
+	return;
+}
 void write_log(char* logFileName, char* fileName, int num, int state)
 {
 	int i;
@@ -137,7 +152,7 @@ int main(void)
 	struct sockaddr_in recv_addr, send_addr;
 	pid_t pid;	
 	int recv_sock, i, slen = sizeof(send_addr);
-	char buf[BUFLEN];
+	char buf[BUFLEN + 1];
 	int ret;
 	int sock_buf_size;
 	int new_sock_buf_size = SOCK_BUF_SIZE;
@@ -198,7 +213,6 @@ int main(void)
 
 	while(1)
 	{
-
 		if (recvfrom(recv_sock, msg, sizeof(struct MSG), 0, (struct sockaddr *) &send_addr, &slen) == -1)
 		{
 			continue;
@@ -210,6 +224,7 @@ int main(void)
 		strcat(logFileName, "_receiving_log.txt");
 		if(msg->seq == INF)
 		{
+			erase_fileAck(msg->fileName);
 			write_log(logFileName, msg->fileName, 0, FIN);
 			continue;
 		}
