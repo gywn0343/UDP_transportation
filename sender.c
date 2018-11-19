@@ -33,16 +33,27 @@ typedef struct ACK{
 	int ack;
 }ACK;
 
-char* itoa(int i)
+char *itoa(int i)
 {
 	static char buf[INT_DIGITS + 2];
-	char* p = buf + INT_DIGITS + 1;
-	do
+	char *p = buf + INT_DIGITS + 1; 
+	if (i >= 0) 
 	{
-		*--p = '0' + (i % 10);
-		i /= 10;
-	}while(i != 0);
-	return p;
+		do {
+			*--p = '0' + (i % 10);
+			i /= 10;
+		} while (i != 0);
+		return p;
+	}
+	else 
+	{ 
+		do {
+			*--p = '0' - (i % 10);
+			i /= 10;
+		} while (i != 0);
+		*--p = '-';
+	}
+	return p; 
 }
 
 void write_log(char* logFileName, clock_t start, int num, int state, clock_t timeout_since)
@@ -100,16 +111,7 @@ int isOver(MSG* msg)
 {
 	return msg[0].seq == INF;
 }
-void print(MSG* msg)
-{
-	int i;
-	for(i=0;i<WIN;i++)
-	{
-		if(msg[i].seq == INF) printf("INF: ");
-		else printf("%d: ", msg[i].seq);
-	}
-		printf("\n---------------\n");
-}
+
 void do_fileSend(int send_sock, struct sockaddr_in recv_addr, int slen, char* fileName)
 {
 	int ret;
@@ -132,15 +134,17 @@ void do_fileSend(int send_sock, struct sockaddr_in recv_addr, int slen, char* fi
 	int throu_cnt = 0;
 	int good_cnt = 0;
 	char log[BUFLEN];
+	char m_one[] = "-1";
 	strcpy(log, fileName);
 	strcat(log, "_sending_log.txt");
-	
+
+	for(i=0;i<WIN;i++)
+		msg[i].seq = INF;
 	if((fp = open(fileName, O_RDONLY)) == -1)
 	{
 		perror("File open");
 		exit(1);
 	}
-int ffp = open("aa", O_RDWR | O_CREAT, 0755);
 	int fd[2];
 	if(pipe(fd) == -1)
 	{
@@ -160,11 +164,8 @@ int ffp = open("aa", O_RDWR | O_CREAT, 0755);
 		MSG *cur_msg = (struct MSG*)malloc(sizeof(struct MSG));
 		while(1)
 		{
-//printf("flag = %d\n", flag);
-//print(msg);
-			if(flag == 0 || flag == 3)
+			if(flag == 0) // read file & send it
 			{
-//printf("msg_cnt = %d\n", msg_cnt);
 				for(;msg_cnt < WIN;msg_cnt++)
 				{
 					cur_msg = &(msg[msg_cnt]);
@@ -178,98 +179,105 @@ int ffp = open("aa", O_RDWR | O_CREAT, 0755);
 					strcpy(cur_msg->fileName, fileName);
 					cur_msg->ret = ret;
 					cur_msg->seq = seq++;
-//print(msg);
-//printf("%s %d: %d\n", cur_msg->fileName, cur_msg->seq, cur_msg->ret);
-//write(ffp, cur_msg->buf, ret);
 					sendto(send_sock, cur_msg, sizeof(struct MSG), 0, (struct sockaddr*)&recv_addr, slen);
 					throu_cnt++;
 					good_cnt++;
-					write_log(log, very_start_time, cur_msg->seq, SENT, 0);
+					write_log(log, very_start_time, cur_msg->seq, SENT, 1);
 				}
 			}
-			if(flag == 2 || flag == 4)
+			else if(flag == 4)
 			{
-//printf("resending data in window...\n");
-				int tmp_cnt = 0;
-				for(i=0;i<WIN;i++)
-				{
-					cur_msg = &(msg[i]);
-					if(cur_msg->seq == INF) break;
-					sendto(send_sock,cur_msg, sizeof(struct MSG), 0, (struct sockaddr*)&recv_addr, slen);
-					throu_cnt++;
-					if(flag == 2)
-					{
-						if(tmp_cnt++ == 0)
-							write_log(log, very_start_time, cur_msg->seq, TIMEOUT, start);
-						write_log(log, very_start_time, cur_msg->seq, RETRANS, 0);
-					}
-					else if(flag == 4)
-					{
-						if(tmp_cnt++ == 0)
-							write_log(log, very_start_time, cur_msg->seq, DUP_3, 0);
-						write_log(log, very_start_time, cur_msg->seq, SENT, 0);
-					}
-				}
+				cur_msg = &(msg[0]);
+				sendto(send_sock,cur_msg, sizeof(struct MSG), 0, (struct sockaddr*)&recv_addr, slen);
+				throu_cnt++;
+				write_log(log, very_start_time, cur_msg->seq, DUP_3, 0);
+				write_log(log, very_start_time, cur_msg->seq, SENT, 2);
 				flag = 0;	
 			}
-//print(msg);
 			if(flag == 1 && isOver(msg))
 			{
-//printf("Bye!\n");
 				kill(pid, SIGINT);
 				write_log(log, very_start_time, throu_cnt, FIN, good_cnt);
 				sendto(send_sock,cur_msg, sizeof(struct MSG), 0, (struct sockaddr*)&recv_addr, slen);
 				close(fp);
-close(ffp);
 				return;
 			}
 			now = clock();
 			last = (double)(now - start) / CLOCKS_PER_SEC;
-//printf("last: %f time: %f\n", last, TIME);
-			if(last > TIME && flag == 3)
+			if(last > TIME)
 			{
-//printf("timer error\n");
-				flag = 2;
-				start = clock();
-				continue;
-			}
-			else if(last > TIME)
-			{
-				flag = 3;
 				start = clock();
 			}
 
-		/*	if((pid_time = fork()) < 0)
+			if((pid_time = fork()) < 0)
 			{
 				perror("fork");
 				exit(1);
-			}*/
-		//	if(pid_time == 0) // timer_child waits for child ack
-		//	{
+			}
+			if(pid_time > 0) // waits for ack
+			{
 				while(1)
 				{
 					memset(ack, 0, ACKLEN+1);
-					if(read(fd[0], ack, ACKLEN) == 0) continue;
-					if(*ack != 0) break;
+					read(fd[0], ack, ACKLEN);
+					if(*ack == 0 || *ack == '*') continue;
+					for(i=0;i<strlen(ack);i++)
+					{
+						if(ack[i] == '-') 
+						{
+							memset(ack, 0, ACKLEN + 1); strcpy(ack, m_one);			
+							break;
+						}
+					}
+					if(strcmp(ack, m_one) == 0) break;
+					else if(strlen(ack) > strlen(itoa(prev_ack)))
+					{
+						for(i=0;i<WIN;i++)
+						{
+							if(msg[i].seq == atoi(ack)) break;
+						}
+						if(i == WIN)
+						{
+							memset(ack, 0, ACKLEN + 1);
+							strcpy(ack, itoa(prev_ack));
+						}
+						
+					}
+					break;
 				}
-		/*	}
-			else
+				kill(pid_time, SIGINT);
+			}
+			else if(pid_time == 0) // timer
 			{
-				int status;
+				flag = 0;
 				while(1)
 				{
-					if(waitpid(pid_time, &status, WNOHANG) > 0)
-						break;
 					now = clock();
 					last = (double)(now - start) / CLOCKS_PER_SEC;
 					if(last > TIME)
 					{
-						kill(pid_time, SIGINT);
-						break;
+						if(flag == 2)
+						{		
+							cur_msg = &(msg[0]);
+							sendto(send_sock,cur_msg, sizeof(struct MSG), 0, (struct sockaddr*)&recv_addr, slen);
+							throu_cnt++;
+
+							write_log(log, very_start_time, cur_msg->seq, TIMEOUT, start);
+							write_log(log, very_start_time, cur_msg->seq, RETRANS, 0);
+							break;
+						}
+						else 
+						{
+							flag = 2;
+							start = clock();
+						}
 					}
 				}
-			}*/
-//printf("ack in parent: <%s>\n", ack);
+				return;
+			}
+			now = clock();
+			last = (double) (now - start) / CLOCKS_PER_SEC;
+			if(last > TIME) dup = 0;
 			write_log(log, very_start_time, atoi(ack), RECV, 0);
 		
 			
@@ -277,9 +285,7 @@ close(ffp);
 			{
 				if(++dup == DUP) 
 				{
-//printf("3 dup error\n");
 					flag = 4; // re-send data in window
-					dup = 0;
 				}
 			}
 			else dup = 0;
@@ -292,25 +298,22 @@ close(ffp);
 	{
 		close(fd[0]);
 		ACK *Ack = (ACK*)malloc(sizeof(ACK));
-		char send_ack[ACKLEN + 1] = "0";
-		char null_ack = 0;
+		char null_ack = '*';
+		char send_ack[ACKLEN+1];
 		while(1)
 		{
 			
 			memset(ack, 0, ACKLEN + 1);
 			if(recvfrom(send_sock, Ack, sizeof(ACK), 0, (struct sockaddr*)&recv_addr, &slen) == -1)
 				continue;
-			usleep(5000);
-			if(atoi(send_ack) < Ack->ack);
+			usleep(300);
 			strcpy(send_ack, itoa(Ack->ack));
-printf("receiving...%s %s %s\n", fileName, Ack->fileName, send_ack);
 			if(strcmp(fileName, Ack->fileName) != 0) 
 			{
 				write(fd[1], &null_ack, 1);
 				continue; // ack for another file
 			}
-			write(fd[1], send_ack, sizeof(send_ack));
-printf("ack in child: %s\n", send_ack);
+			write(fd[1], send_ack, strlen(send_ack));
 		}
 	}
 }
@@ -347,12 +350,13 @@ int main(void)
 	}
 
 	char* fileName = (char*)malloc(sizeof(char)*BUFLEN);
-	int pid;
+	int pid = 0;
 	while(1)
 	{
 		memset(fileName, 0, BUFLEN);
 		printf("file name: ");
 		scanf("%s", fileName);
+		
 		
 		if((pid = fork()) < 0)
 		{
@@ -362,6 +366,7 @@ int main(void)
 		if(pid == 0)  // child
 		{
 			do_fileSend(send_sock, recv_addr, slen, fileName);
+			return 0;
 		}
 	}
 	close(send_sock);
