@@ -3,6 +3,7 @@
 #include <string.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -10,30 +11,36 @@
 #include <fcntl.h>
 
 #define BUFLEN 1400
-#define PACKET_LOSS_PROB 2
 #define PORT 10080
 #define SOCK_BUF_SIZE 10000000
-#define FILE_NUM 100
+#define RECV_BUF_SIZE 200
+#define PORT_NUM 50
 #define INT_DIGITS 19
 #define INF 999999999
 
 enum {FIN, DROP, SEND, RECV};
 typedef struct ACK{
-	char fileName[BUFLEN + 1];
+	int portNum;
 	int ack;
 	int loc;
-	clock_t start;
+	double start;
 }ACK;
-ACK ack[FILE_NUM];
+ACK ack[PORT_NUM];
 typedef struct MSG{
-	char fileName[BUFLEN + 1];
 	char buf[BUFLEN + 1];
 	int seq;
-	int length;
+	double time;
 }MSG;
-MSG msg[FILE_NUM][110];
-int rec[FILE_NUM][99999];
+MSG msg[PORT_NUM][RECV_BUF_SIZE];
 
+double get_time()
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	double t = tv.tv_sec;
+	t += tv.tv_usec / 1000000.0;
+	return t;
+}
 char* itoa(int i)
 {
 	static char buf[INT_DIGITS + 2];
@@ -58,13 +65,13 @@ char* itoa(int i)
 		return p;
 	}
 }
-ACK receive_file(MSG* tmp_msg, char *fileName, char *buf, int seq, int length)
+ACK receive_file(MSG* tmp_msg, int portNum, int seq)
 {
 	int i, loc, j;
 	int flag = 0;
-	for(i=0;i<FILE_NUM;i++)
+	for(i=0;i<PORT_NUM;i++)
 	{
-		if(strcmp(ack[i].fileName, fileName) == 0)
+		if(ack[i].portNum == portNum)
 		{
 			if(ack[i].ack + 1 == seq)   // sequential input
 			{
@@ -85,43 +92,24 @@ ACK receive_file(MSG* tmp_msg, char *fileName, char *buf, int seq, int length)
 			}
 			break;
 		}
+		else if(ack[i].portNum == -1 && seq == 0)
+		{
+			ack[i].ack = seq;
+			ack[i].portNum = portNum;
+		}
 	}
 
-	int fp;
+
 	if(flag == 1) return ack[i]; // redundent sequence || some packets are missing
-	if(seq == 0)
-	{
-		if((fp = open(fileName, O_RDWR | O_CREAT, 0755)) == -1)
-		{
-			perror("file create");
-			exit(1);
-		}
-	}
-	else
-	{
-		if((fp = open(fileName, O_RDWR | O_APPEND)) == -1)
-		{
-			perror("file open");
-			exit(1);
-		}
-	}
-	
-	write(fp, buf, length);
-	if(msg[i][0].length == -1) 
-	{
-		close(fp);
-		return ack[i];
-	}
 	else
 	{
 		while(1)
 		{
 			if(msg[i][0].seq == seq + 1)
 			{
-				write(fp, msg[i][0].buf, msg[i][0].length);
 				ack[i].ack = msg[i][0].seq;
 				ack[i].loc--;
-				for(j=0;msg[i][j].length != -1;j++)
+				for(j=0;msg[i][j].seq != -2;j++)
 				{
 					msg[i][j] = msg[i][j+1];
 				}
@@ -130,30 +118,16 @@ ACK receive_file(MSG* tmp_msg, char *fileName, char *buf, int seq, int length)
 			else break;
 		}
 	}
-	close(fp);
 	
 	return ack[i];
 }
 
-int isDrop(int seq, int rec[99999])
-{
-	srand(clock());
-
-	if(rec[seq] == 1) return 0;
-	int ret = rand() % 100;
-	if(ret < PACKET_LOSS_PROB) 
-	{
-		rec[seq] = 1;
-		return 1;
-	}
-	return 0;
-}
-int erase_fileAck(char* fileName)
+int erase_fileAck(int portNum)
 {
 	int i, j;
 	for(i=0;ack[i].ack != -1;i++)
 	{
-		if(strcmp(ack[i].fileName, fileName) == 0)
+		if(ack[i].portNum == portNum)
 		{
 			for(j=i;ack[j].ack != -1;j++)
 			{
@@ -161,54 +135,20 @@ int erase_fileAck(char* fileName)
 			}
 			for(j=0;j<110;j++)
 			{
-				msg[i][j].length = -1;
 				msg[i][j].seq = -2;
 			}
-			for(j=0;j<99999;j++)
-				rec[i][j] = 0;
 		}
 	}
 	return i;
 }
-void write_log(char* logFileName, char* fileName, int num, int state)
-{
-	int i;
-	for(i=0;ack[i].ack != -1;i++)
-	{
-		if(strcmp(ack[i].fileName, fileName) == 0) break;
-	}
-	if(ack[i].ack == -1)
-	{
-		ack[i].start = clock();
-		strcpy(ack[i].fileName, fileName);
-	}
-	FILE* log = fopen(logFileName, "a");
-	if(log == NULL)
-	{
-		perror("log");
-		exit(1);
-	}
-	clock_t now = clock();
-	double time = (double)(now - ack[i].start) / CLOCKS_PER_SEC;
 
-	if(state == DROP) 
-		fprintf(log, "%.3f pkt: %d	|	dropped\n", time, num);
-	else if(state == RECV) 	
-		fprintf(log, "%.3f pkt: %d	|	received\n", time, num);
-	else if(state == SEND)
-		fprintf(log, "%.3f ACK: %d	|	sent\n", time, num); 
-	else
-	{
-		fprintf(log, "\nFile transfer is finished.\n");
-	}
-	fclose(log);
-}
 
 int main(void)
 {
 	struct sockaddr_in recv_addr, send_addr;
 	pid_t pid;	
-	int recv_sock, i, slen = sizeof(send_addr);
+	int recv_sock, i, slen = sizeof(send_addr);	
+	int recv_len = sizeof(send_addr);	
 	char buf[BUFLEN + 1];
 	int ret;
 	int sock_buf_size;
@@ -227,7 +167,6 @@ int main(void)
 		perror("getsockopt error");
 		exit(1);
 	}
-	printf("packet loss probability: %.2f\n", PACKET_LOSS_PROB / 100.0);
 	printf("socket recv buffer size: %d\n", sock_buf_size);
 
 	if(setsockopt(recv_sock, SOL_SOCKET, SO_REUSEADDR, (char*)&bf, (int)sizeof(bf)) < 0)
@@ -262,51 +201,43 @@ int main(void)
 	}
 	printf("\nReceiver program started...\n");
 	int j;
-	for(i=0;i<FILE_NUM;i++)
+	for(i=0;i<PORT_NUM;i++)
 	{
 		ack[i].ack = -1;
-		for(j=0;j<110;j++)
+		ack[i].portNum = -1;
+		for(j=0;j<RECV_BUF_SIZE;j++)
 		{
-			msg[i][j].length = -1;
 			msg[i][j].seq = -2;
 		}
-		for(j=0;j<99999;j++)
-			rec[i][j] = 0;
 	}
 	MSG* tmp_msg = (MSG*)malloc(sizeof(MSG));
 	char logFileName[BUFLEN];
 	int loc;
 
+	unsigned int portNum;
 	while(1)
 	{
-		if (recvfrom(recv_sock, tmp_msg, sizeof(struct MSG), 0, (struct sockaddr *) &send_addr, &slen) == -1)
+		if (recvfrom(recv_sock, tmp_msg, sizeof(struct MSG), 0, (struct sockaddr *) &send_addr, &slen) < 0)
 		{
-			continue;
+			perror("recv");
+			exit(1);
 		}
-		strcpy(logFileName, tmp_msg->fileName);
-		strcat(logFileName, "_receiving_log.txt");
+		getsockname(recv_sock, (struct sockaddr *)&recv_addr, &recv_len);
+		portNum = ntohs(send_addr.sin_port);
+printf("%d: %d\n", portNum, tmp_msg->seq);
 		if(tmp_msg->seq == INF)
 		{
-			printf("%s file receiving completed.\n", tmp_msg->fileName);
-			loc = erase_fileAck(tmp_msg->fileName);
-			write_log(logFileName, tmp_msg->fileName, 0, FIN);
+			erase_fileAck(portNum);
 			continue;
 		}
-		else if(isDrop(tmp_msg->seq, rec[loc]))
-		{
-			write_log(logFileName, tmp_msg->fileName, tmp_msg->seq, DROP);
-			continue;
-		}
-		else
-			write_log(logFileName, tmp_msg->fileName, tmp_msg->seq, RECV);
-			
-		ACK tmp = receive_file(tmp_msg, tmp_msg->fileName, tmp_msg->buf, tmp_msg->seq, tmp_msg->length);
+
+		ACK tmp = receive_file(tmp_msg, portNum, tmp_msg->seq);
+printf("ACK: %d (%d)\n", tmp.ack, tmp.portNum);
 		if (sendto(recv_sock, &tmp, sizeof(tmp), 0, (struct sockaddr*) &send_addr, slen) == -1)
 		{
 			perror("sendto");
 			exit(1);
 		}
-		write_log(logFileName, tmp.fileName, tmp.ack, SEND);
 	}
 		
 	
