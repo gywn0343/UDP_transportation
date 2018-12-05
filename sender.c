@@ -310,6 +310,10 @@ int main(void)
 		perror("socket errors");
 		exit(1);
 	}
+	getsockname(send_sock, (struct sockaddr *)&send_addr, &send_len);
+	unsigned int portNum = 0;
+	portNum = ntohs(send_addr.sin_port);
+	printf("port Nmber: %d\n", portNum);
 
 	char command[10];
 	printf("Receiver IP address: ");
@@ -326,25 +330,16 @@ int main(void)
 		perror("inet_aton() error");
 		exit(1);
 	}
-//	getsockname(send_sock, (struct sockaddr *)&send_addr, &send_len);
-	unsigned int portNum = 0;
-//	portNum = ntohs(send_addr.sin_port);
-//printf("port Nmber: %d\n", portNum);
-//	strcpy(fileName, itoa(portNum));
-//	strcat(fileName, "_log.txt");
+
+
+	//strcpy(fileName, itoa(portNum));
+	//strcat(fileName, "_log.txt");
 	int pid = 0;
 
 	printf("command>> ");
 	ret = scanf("%s %d", command, &WIN);
 	TIME = 0.05;
-char TMP[] = "Hello sender";
-//slen = sizeof(struct sockaddr_in);
-if(sendto(send_sock, TMP, sizeof(TMP), 0, (struct sockaddr*)&recv_addr, slen) < 0)
-{
-	perror("send");
-	exit(1);
-}
-printf("sent\n");
+
 	while(1)
 	{
 		if(strcmp(command, "stop") == 0) kill(pid, SIGINT);
