@@ -18,6 +18,13 @@
 #define INT_DIGITS 19
 #define INF 999999999
 
+int income=0;
+int forward=0;
+int avgQueue=0;
+int avgCnt=0;
+int throu[PORT_NUM];
+int portCnt=0;
+
 enum {FIN, DROP, SEND, RECV};
 typedef struct ACK{
 	int portNum;
@@ -31,7 +38,12 @@ typedef struct MSG{
 	int seq;
 	double time;
 }MSG;
-MSG msg[PORT_NUM][RECV_BUF_SIZE];
+typedef struct MSG2RM{
+	int seq;
+	struct sockaddr_in send_addr;
+}MSG2RM;
+//MSG msg[PORT_NUM][RECV_BUF_SIZE];
+int flag = -1;
 
 double get_time()
 {
@@ -65,11 +77,22 @@ char* itoa(int i)
 		return p;
 	}
 }
+
+int isFirstConnection(int portNum)
+{
+	int i;
+	for(i=0;i<portCnt;i++)
+	{
+		if(ack[i].portNum == portNum) return 0;
+	}
+	ack[portCnt].portNum = portNum;
+	return 1;
+}
 ACK receive_file(MSG* tmp_msg, int portNum, int seq)
 {
 	int i, loc, j;
 	int flag = 0;
-	for(i=0;i<PORT_NUM;i++)
+	for(i=0;i<portCnt;i++)
 	{
 		if(ack[i].portNum == portNum)
 		{
@@ -79,28 +102,23 @@ ACK receive_file(MSG* tmp_msg, int portNum, int seq)
 			}
 			else if(ack[i].ack >= seq)
 			{
-				flag = 1;
+				//flag = 1;
 			}
 			else  // something is dropped
 			{
-				flag = 1;
-				for(j=0;j<ack[i].loc;j++)
+				//flag = 1;
+				/*for(j=0;j<ack[i].loc;j++)
 				{
 					if(seq == msg[i][j].seq) return ack[i];
 				}
-				msg[i][(ack[i].loc)++] = *tmp_msg;
+				msg[i][(ack[i].loc)++] = *tmp_msg;*/
 			}
 			break;
-		}
-		else if(ack[i].portNum == -1 && seq == 0)
-		{
-			ack[i].ack = seq;
-			ack[i].portNum = portNum;
 		}
 	}
 
 
-	if(flag == 1) return ack[i]; // redundent sequence || some packets are missing
+	/*if(flag == 1) return ack[i]; // redundent sequence || some packets are missing
 	else
 	{
 		while(1)
@@ -117,36 +135,107 @@ ACK receive_file(MSG* tmp_msg, int portNum, int seq)
 			}
 			else break;
 		}
-	}
+	}*/
 	
 	return ack[i];
 }
 
-int erase_fileAck(int portNum)
+void erase_port(int n)
 {
-	int i, j;
-	for(i=0;ack[i].ack != -1;i++)
+	int j;
+printf("erasing %d\n", ack[n].portNum);
+	for(j=n;ack[j].ack != -1;j++)
 	{
-		if(ack[i].portNum == portNum)
-		{
-			for(j=i;ack[j].ack != -1;j++)
-			{
-				ack[j] = ack[j+1];
-			}
-			for(j=0;j<110;j++)
-			{
-				msg[i][j].seq = -2;
-			}
-		}
+		ack[j] = ack[j+1];
+		throu[j] = throu[j+1];
 	}
-	return i;
+	portCnt--;
+printf("portCnt: %d\n", portCnt);
+	flag = -1;
 }
 
+MSG2RM *queue;
+int q_cnt = 0;
+int BLR, queue_size;
+int flush_queue(int fd)
+{
+	int i;
+	for(i=0;i<q_cnt;i++)
+	{
+		write(fd, queue + i, sizeof(struct MSG2RM));
+	}
+	int ret = q_cnt;
+	q_cnt = 0;
+	return ret;
+}
+void check_queue(MSG* tmp_msg, struct sockaddr_in send_addr)
+{
+//printf("seq in queue check..%d\n", tmp_msg->seq);
+	int drop_rate;
+	double u_rate = (double)q_cnt / (double)queue_size * 100; 
+	drop_rate = u_rate;
+	
 
+	int ret = rand() % 100;
+	if(ret < drop_rate) // drop
+		return;
+	else
+	{
+		queue[q_cnt].seq = tmp_msg->seq;
+		queue[q_cnt++].send_addr = send_addr;
+	}
+
+}
+void write_log_NEM(double start, double t1, double t2)
+{
+	double time2 = t1 - t2; // almost 2sec
+	double time = t1 - start;
+	
+	FILE* log = fopen("NEM.log", "a");
+	fprintf(log, "%.3lf	|	%.3lf	|	%.3lf	|	%.3lf	\n", 
+				time, 
+				income/time2, 
+				forward/time2, 
+				(double)avgQueue/avgCnt/100);
+	fclose(log);
+}
+void write_log_RM(double start, double t1, double t2)
+{
+	double jain=0;
+	double time = t1 - t2;
+	int sum = 0, sum2 = 0;
+	int i;
+	FILE* log = fopen("RM.log", "a");
+	if(portCnt > 0)
+	{
+		for(i=0;i<portCnt;i++)
+		{
+			if(throu[i] == 0) erase_port(i);
+		}
+		for(i=0;i<portCnt;i++)	
+		{
+			sum += throu[i];
+		}
+		for(i=0;i<portCnt;i++)
+		{
+			sum2 += throu[i] * throu[i];
+		}
+		jain = (double)sum * sum / (portCnt * sum2);
+	}
+	
+	fprintf(log, "%.3lf	|	%.3lf\n", t1 - start, jain);
+	for(i=0;i<portCnt;i++)
+	{
+		fprintf(log, "		|	%d	|	%.3lf\n", /*ip,*/ ack[i].portNum, throu[i] / time);
+	}
+	fprintf(log, "-----------------------\n");
+	fclose(log);
+}
 int main(void)
 {
 	struct sockaddr_in recv_addr, send_addr;
 	pid_t pid;	
+	srand((unsigned)time(NULL));
 	int recv_sock, i, slen = sizeof(send_addr);	
 	int recv_len = sizeof(send_addr);	
 	char buf[BUFLEN + 1];
@@ -205,42 +294,141 @@ int main(void)
 	{
 		ack[i].ack = -1;
 		ack[i].portNum = -1;
-		for(j=0;j<RECV_BUF_SIZE;j++)
-		{
-			msg[i][j].seq = -2;
-		}
+		//for(j=0;j<RECV_BUF_SIZE;j++)
+		//{
+		//	msg[i][j].seq = -2;
+		//}
 	}
 	MSG* tmp_msg = (MSG*)malloc(sizeof(MSG));
 	char logFileName[BUFLEN];
 	int loc;
 
 	unsigned int portNum;
-	while(1)
-	{
-		if (recvfrom(recv_sock, tmp_msg, sizeof(struct MSG), 0, (struct sockaddr *) &send_addr, &slen) < 0)
-		{
-			perror("recv");
-			exit(1);
-		}
-		getsockname(recv_sock, (struct sockaddr *)&recv_addr, &recv_len);
-		portNum = ntohs(send_addr.sin_port);
-printf("%d: %d\n", portNum, tmp_msg->seq);
-		if(tmp_msg->seq == INF)
-		{
-			erase_fileAck(portNum);
-			continue;
-		}
 
-		ACK tmp = receive_file(tmp_msg, portNum, tmp_msg->seq);
-printf("ACK: %d (%d)\n", tmp.ack, tmp.portNum);
-		if (sendto(recv_sock, &tmp, sizeof(tmp), 0, (struct sockaddr*) &send_addr, slen) == -1)
+	double now_time;
+
+	printf("configure>>");
+	scanf("%d %d", &BLR, &queue_size);
+	queue = (MSG2RM*)malloc(sizeof(MSG2RM)*queue_size);
+	char myIP[16];
+	int fd[2];
+	MSG2RM msg2rm;
+	if(pipe(fd) == -1)
+	{
+		perror("pipe");
+		exit(1);
+	}
+
+	if((pid = fork()) < 0) 
+	{
+		perror("fork");
+		exit(1);
+	}
+	else if(pid > 0) // RM
+	{
+		close(fd[1]);
+		double very_start_time = get_time();
+		double start_time_2sec = get_time();
+		while(1)
 		{
-			perror("sendto");
-			exit(1);
+
+			read(fd[0], &msg2rm, sizeof(struct MSG2RM));
+			
+//printf("msg from NEM: %d\n", msg2rm.seq);
+			send_addr = msg2rm.send_addr;
+			//getsockname(recv_sock, (struct sockaddr *)&recv_addr, &recv_len);
+			portNum = ntohs(send_addr.sin_port);
+			if(isFirstConnection(portNum))
+			{
+				portCnt++;
+			}
+			for(i=0;i<PORT_NUM;i++)
+			{
+//printf("ack[%d].portNum = %d\n", i, ack[i].portNum);
+				if(ack[i].portNum == portNum)
+				{
+//printf("throu[%d] = %d\n", i, throu[i]);
+					throu[i] += 1;
+//printf("throu[%d] = %d\n", i, throu[i]);
+					break;
+
+				}
+			}
+
+			ACK tmp = receive_file(tmp_msg, portNum, msg2rm.seq);
+//printf("ACK: %d (%d)\n", tmp.ack, tmp.portNum);
+			if (sendto(recv_sock, &tmp, sizeof(tmp), 0, (struct sockaddr*) &send_addr, slen) == -1)
+			{
+				perror("sendto");
+				exit(1);
+			}
+			now_time = get_time();
+			if(now_time >= start_time_2sec + 2)
+			{
+//printf("hear!\n");
+				write_log_RM(very_start_time, now_time, start_time_2sec);
+				start_time_2sec = get_time();
+				for(i=0;i<portCnt;i++)
+					throu[i] = 0;
+			}
 		}
 	}
-		
-	
+	else // NEM
+	{
+		double very_start_time = get_time();
+		double start_time_1sec = get_time();
+		double start_time_2sec = get_time();
+		double start_time_100m = get_time();
+		close(fd[0]);	
+		int CNT = 0;
+		FILE* fp = fopen("NEM.log", "w");
+		fprintf(fp, "time	|	income	|	forward	|	avg_queue_utilization\n");
+		fclose(fp);
+		while(1)
+		{
+
+
+			if (recvfrom(recv_sock, tmp_msg, sizeof(struct MSG), 0, (struct sockaddr *) &send_addr, &slen) < 0)
+			{
+				perror("recv");
+				exit(1);
+			}
+			income++;
+			CNT++;
+			if(CNT > BLR)
+			{
+				check_queue(tmp_msg, send_addr);
+			}
+			else
+			{
+				msg2rm.seq = tmp_msg->seq;
+				msg2rm.send_addr = send_addr;
+				write(fd[1], &msg2rm, sizeof(struct MSG2RM));
+				forward++;
+				usleep(300);
+			}
+			now_time = get_time();
+			if(now_time >= start_time_100m + 0.1)
+			{
+				avgQueue += q_cnt;
+				avgCnt++;
+				start_time_100m = get_time();
+			}
+			if(now_time >= start_time_1sec + 1) // 1 sec later..
+			{
+				start_time_1sec = get_time();
+				CNT = 0;
+				CNT += flush_queue(fd[1]);
+			}
+			if(now_time >= start_time_2sec + 2)
+			{
+				write_log_NEM(very_start_time, now_time, start_time_2sec);
+				start_time_2sec = get_time();				
+				income = 0; forward = 0; avgQueue = 0; avgCnt = 0;
+			}
+		}
+	}
+
 
 	close(recv_sock);
 	return 0;

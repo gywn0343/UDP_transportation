@@ -19,7 +19,7 @@
 #define DUP 3
 
 int WIN;
-float TIME;
+double TIME = 0.05;
 double throu = 0;
 double good = 0;
 double avgRTT = 0.05;
@@ -73,23 +73,38 @@ void write_log(char* logFileName, double start, double t1, double t2)
 	double time = now - start;
 	double time2 = t1 - t2;
 	FILE* log = fopen(logFileName, "a");
-	fprintf(log, "%.3lf	|	%.3lf	|	%.3lf	|%.3lf	|\n", time, avgRTT, throu/time2, good/time2);
+	fprintf(log, "%.3lf	|	%.3lf	|	%.3lf	|%.3lf	|\n", 
+			time, 
+			avgRTT, 
+			throu/time2, 
+			good/time2);
 	fclose(log);
 }
 void update_timer(double sent_time)
 {
+	int sign = 1;
 	sampleRTT = get_time() - sent_time;
-	avgRTT = (1 - 0.125) * avgRTT + 0.125 * sampleRTT;
-	devRTT = (1 - 0.25) * devRTT + 0.25 * (sampleRTT - avgRTT);
+	if(sampleRTT > TIME * 2) return;
+	avgRTT = (0.875) * avgRTT + 0.125 * sampleRTT;
+	if(sampleRTT - avgRTT < 0) sign = -1;
+	devRTT = (0.75) * devRTT + 0.25 * (sampleRTT - avgRTT) * sign;
 	TIME = avgRTT + 4 * devRTT;
+printf("timer : %.3lf\n", TIME);
 }
 int slide_window(int ack, MSG **msg, int* msg_cnt)
 {
 	int i, j;
 	int cnt = 0;
 	MSG cur;
+/*printf("message start ..\n");
+for(i=0;i<WIN;i++)
+{
+printf("%d ", (*msg)[i].seq);
+}
+printf("message end..\n");*/
 	for(i=0;i<WIN;i++)
 	{
+
 		if((*msg)[i].seq <= ack)
 		{
 			update_timer((*msg)[i].sent_time);
@@ -102,7 +117,7 @@ int slide_window(int ack, MSG **msg, int* msg_cnt)
 			i = -1;
 		}
 	}
-	*msg_cnt -= cnt;
+	*msg_cnt = WIN - cnt;
 	return cnt;
 }
 
@@ -113,7 +128,7 @@ void do_fileSend(int send_sock, struct sockaddr_in recv_addr, int slen, char* Fi
 	int ret;
 	int cnt = 0;
 	int i, fp;
-	MSG *msg = (struct MSG*)malloc(sizeof(struct MSG) * WIN);
+	MSG *msg = (struct MSG*)malloc(sizeof(struct MSG) * 99999);
 	char buf[BUFLEN + 1];
 	char ack[ACKLEN + 1];
 	char tmp_ack[ACKLEN + 1];
@@ -124,12 +139,18 @@ void do_fileSend(int send_sock, struct sockaddr_in recv_addr, int slen, char* Fi
 	double now;
 	double two_sec_before = get_time();
 	double last;
+	ACK *Ack = (ACK*)malloc(sizeof(ACK));
+	MSG *cur_msg = (struct MSG*)malloc(sizeof(struct MSG));
 	
 	int prev_ack = -1;
 	int dup = 0;
 
 	char m_one[] = "-1";
 
+	FILE *log;
+	log = fopen(FileName, "w");
+	fprintf(log, "time	|	avg_RTT	|	SR	|	G\n");
+	fclose(log);
 
 	for(i=0;i<WIN;i++)
 		msg[i].seq = INF;
@@ -149,7 +170,7 @@ void do_fileSend(int send_sock, struct sockaddr_in recv_addr, int slen, char* Fi
 	if(pid > 0) // parent
 	{
 		close(fd[1]);
-		MSG *cur_msg = (struct MSG*)malloc(sizeof(struct MSG));
+		
 		while(1)
 		{
 			now = get_time();
@@ -160,14 +181,18 @@ void do_fileSend(int send_sock, struct sockaddr_in recv_addr, int slen, char* Fi
 			}
 			if(flag == 0) // read file & send it
 			{
+				WIN += 1;
 				for(;msg_cnt < WIN;msg_cnt++)
 				{
 					cur_msg = &(msg[msg_cnt]);
 					cur_msg->seq = seq++;
 					strcpy(cur_msg->buf, itoa(cur_msg->seq));
 					cur_msg->sent_time = get_time();
-					sendto(send_sock, cur_msg, sizeof(struct MSG), 0, (struct sockaddr*)&recv_addr, slen);
-printf("msg: %d\n", cur_msg->seq);
+					if(sendto(send_sock, cur_msg, sizeof(struct MSG), 0, (struct sockaddr*)&recv_addr, slen) < 0)
+					{
+						perror("sendto");
+						exit(1);
+					}
 					throu++;
 				}
 			}
@@ -175,8 +200,7 @@ printf("msg: %d\n", cur_msg->seq);
 			{
 				/* AIMD or CUBIC -> shrink window size */
 				cur_msg = &(msg[0]);
-printf("3 dup ack\n");
-printf("msg: %d\n", cur_msg->seq);
+				WIN /= 2;
 				sendto(send_sock,cur_msg, sizeof(struct MSG), 0, (struct sockaddr*)&recv_addr, slen);
 				flag = 0;
 				throu++;	
@@ -185,6 +209,7 @@ printf("msg: %d\n", cur_msg->seq);
 			last = now - start;
 			if(last > TIME)
 			{
+				if(last > TIME * 3) WIN /= 2;
 				start = get_time();
 				dup = 0;
 			}
@@ -203,6 +228,7 @@ printf("msg: %d\n", cur_msg->seq);
 				{
 					memset(ack, 0, ACKLEN+1);
 					read(fd[0], ack, ACKLEN);
+printf("parent ACK: %s\n", ack);
 					if(*ack == 0 || *ack == '*') continue;
 					for(i=0;i<strlen(ack);i++)
 					{
@@ -234,6 +260,7 @@ printf("ACK: %s\n", ack);
 			else if(pid_time == 0) // timer
 			{
 				flag = 0;
+				int check = 0;
 				while(1)
 				{
 					now = get_time();
@@ -243,12 +270,15 @@ printf("ACK: %s\n", ack);
 						if(flag == 2)
 						{		
 							cur_msg = &(msg[0]);
+							if(check == 0) 
 							/* AIMD or CUBIC -> shrink window size */
-printf("time out\n");
-printf("msg: %d\n", cur_msg->seq);
+printf("time out(%lf)\n", TIME);
+printf("msg: %d\n", msg[0].seq);
+							check++;
 							sendto(send_sock,cur_msg, sizeof(struct MSG), 0, (struct sockaddr*)&recv_addr, slen);
 							throu++;
-							break;
+							flag = 0;
+							//break;
 						}
 						else 
 						{
@@ -257,7 +287,6 @@ printf("msg: %d\n", cur_msg->seq);
 						}
 					}
 				}
-				return;
 			}
 			now = get_time();
 			last = now - start;
@@ -279,7 +308,7 @@ printf("msg: %d\n", cur_msg->seq);
 	else if(pid == 0) // child
 	{
 		close(fd[0]);
-		ACK *Ack = (ACK*)malloc(sizeof(ACK));
+		
 		char null_ack = '*';
 		char send_ack[ACKLEN+1];
 		while(1)
@@ -310,10 +339,13 @@ int main(void)
 		perror("socket errors");
 		exit(1);
 	}
-	getsockname(send_sock, (struct sockaddr *)&send_addr, &send_len);
+
 	unsigned int portNum = 0;
-	portNum = ntohs(send_addr.sin_port);
-	printf("port Nmber: %d\n", portNum);
+
+	portNum = ntohs(recv_addr.sin_port);
+printf("port Number: %d\n", portNum);
+	i = ntohs(send_addr.sin_port);
+	
 
 	char command[10];
 	printf("Receiver IP address: ");
@@ -332,8 +364,10 @@ int main(void)
 	}
 
 
-	//strcpy(fileName, itoa(portNum));
-	//strcat(fileName, "_log.txt");
+	strcpy(fileName, itoa(portNum));
+	strcat(fileName, "_log.txt");
+
+	
 	int pid = 0;
 
 	printf("command>> ");
